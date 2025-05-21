@@ -14,6 +14,7 @@ from src.constants.base import (
     HTML_EXTENSION,
 )
 
+# aqui se pueden encontrar los cuellos de botella.
 
 class ProfilingManager:
     """
