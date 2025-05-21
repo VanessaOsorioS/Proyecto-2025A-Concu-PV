@@ -7,6 +7,7 @@ from src.middlewares.profile import profiler_manager, profile
 from src.funcs.format import fmt_biparte_q
 from src.controllers.manager import Manager
 from src.models.base.sia import SIA
+from concurrent.futures import ProcessPoolExecutor
 
 from src.models.core.solution import Solution
 from src.constants.models import (
@@ -232,6 +233,7 @@ class QNodes(SIA):
                 emd_local = 1e5
                 indice_mip: int
 
+              
                 for k in range(len(deltas_ciclo)):
                     emd_union, emd_delta, dist_marginal_delta = self.funcion_submodular(
                         deltas_ciclo[k], omegas_ciclo
