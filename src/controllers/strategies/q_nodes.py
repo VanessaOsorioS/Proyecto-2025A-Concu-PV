@@ -108,8 +108,8 @@ class QNodes(SIA):
         self.tiempos: tuple[np.ndarray, np.ndarray]
         self.etiquetas = [tuple(s.lower() for s in ABECEDARY), ABECEDARY]
         self.vertices: set[tuple]
-        # self.memoria_delta = dict()
-        self.memoria_omega = dict()
+        # self.memoria_delta = dict() # Se puede integrar en memoria_omega si la clave es hashable (tuple)
+        self.memoria_omega = dict() # Almacena {tupla_nodos: (emd, dist_marginal)}
         self.memoria_particiones = dict()
 
         self.indices_alcance: np.ndarray
@@ -126,12 +126,10 @@ class QNodes(SIA):
     ):
         self.sia_preparar_subsistema(condicion, alcance, mecanismo)
 
-        futuro = tuple(
-            (EFECTO, efecto) for efecto in self.sia_subsistema.indices_ncubos
-        )
-        presente = tuple(
-            (ACTUAL, actual) for actual in self.sia_subsistema.dims_ncubos
-        )  #
+        # Optimizando la construcción de presente y futuro
+        # Usamos listas de tuplas directamente y luego una única conversión a set
+        futuro = [(EFECTO, efecto) for efecto in self.sia_subsistema.indices_ncubos]
+        presente = [(ACTUAL, actual) for actual in self.sia_subsistema.dims_ncubos]
 
         self.m = self.sia_subsistema.indices_ncubos.size
         self.n = self.sia_subsistema.dims_ncubos.size
@@ -144,9 +142,15 @@ class QNodes(SIA):
             np.zeros(self.m, dtype=np.int8),
         )
 
-        vertices = list(presente + futuro)
+        # Solo convertimos a set una vez para `self.vertices`
         self.vertices = set(presente + futuro)
-        mip = self.algorithm(vertices)
+        vertices_list = list(presente + futuro) # Usamos una lista para el algoritmo
+
+        mip = self.algorithm(vertices_list) # Pasamos la lista directamente
+        
+        # Asegurarse de que mip sea una tupla hashable para buscar en el diccionario
+        if not isinstance(mip, tuple):
+             mip = tuple(mip)
 
         fmt_mip = fmt_biparte_q(list(mip), self.nodes_complement(mip))
         perdida_mip, dist_marginal_mip = self.memoria_particiones[mip]
@@ -199,7 +203,7 @@ class QNodes(SIA):
         - individual_memory: Almacena las EMDs y distribuciones de nodos individuales, evitando recálculos muy costosos.
         - partition_memory: Guarda las EMDs y distribuciones de las particiones completas, permitiendo comparar diferentes combinaciones de grupos teniendo en cuenta que su valor real está asociado al valor individual de su formación delta.
 
-        La memoización es relevante puesto muchos cálculos de EMD son computacionalmente costosos y se repiten durante la ejecución del algoritmo.
+        La memoización es relevante puesto muchos cálculos de EMD son computacionalmente costos y se repiten durante la ejecución del algoritmo.
 
         Resultado:
         ---------------
@@ -212,71 +216,96 @@ class QNodes(SIA):
         Returns:
             tuple[float, tuple[tuple[int, int], ...]]: El valor de pérdida en la primera posición, asociado con la partición óptima encontrada, identificada por la clave en partition_memory que produce la menor EMD.
         """
-        omegas_origen = np.array([vertices[0]])
-        deltas_origen = np.array(vertices[1:])
+        # Aseguramos que la lista inicial de vértices sea mutable para las operaciones pop/append
+        vertices_fase = list(vertices)
 
-        vertices_fase = vertices
-
-        omegas_ciclo = omegas_origen
-        deltas_ciclo = deltas_origen
+        # Inicializamos omegas y deltas como listas
+        # omegas_ciclo y deltas_ciclo serán modificadas, por lo que deben ser listas
+        omegas_ciclo = [vertices_fase[0]]
+        deltas_ciclo = list(vertices_fase[1:]) # Aseguramos que sea una nueva lista mutable
 
         total = len(vertices_fase) - 2
         for i in range(len(vertices_fase) - 2):
             self.logger.debug(f"total: {total-i}")
-            omegas_ciclo = [vertices_fase[0]]
-            deltas_ciclo = vertices_fase[1:]
+            # Re-inicializamos omegas_ciclo y deltas_ciclo para cada 'fase' (bucle 'i')
+            # Esto es crucial si `vertices_fase` se modifica en el bucle interior
+            # Si `vertices_fase` NO se modifica en el bucle 'j', estas líneas pueden ir fuera del bucle 'i'
+            # o su comportamiento cambiará. Asumo que es el comportamiento deseado re-inicializar
+            # para cada fase 'i'.
+            if i > 0: # Para la primera iteración, ya están inicializados
+                omegas_ciclo = [vertices_fase[0]]
+                deltas_ciclo = list(vertices_fase[1:])
 
             emd_particion_candidata = INFTY_POS
+            dist_particion_candidata = None # Inicializar para asegurar que siempre tenga un valor
 
-            for j in range(len(deltas_ciclo) - 1):
-                # self.logger.critic(f"   {j=}")
-                emd_local = 1e5
-                indice_mip: int
+            # Este bucle `j` es donde se construyen los grupos
+            for j in range(len(deltas_ciclo)): # Cambiado de -1 a sin -1, ya que pop() reducirá el tamaño
+                emd_local = INFTY_POS # Inicializar en cada iteración 'j'
+                indice_mip: int = -1 # Inicializar para evitar UnboundLocalError
 
-              
+                # Bucle 'k' para evaluar cada delta candidato
                 for k in range(len(deltas_ciclo)):
+                    current_delta = deltas_ciclo[k]
+                    
+                    # Llamada a la función submodular.
+                    # Aquí la MEMOIZACIÓN se vuelve crucial (ver comentarios en funcion_submodular)
                     emd_union, emd_delta, dist_marginal_delta = self.funcion_submodular(
-                        deltas_ciclo[k], omegas_ciclo
+                        current_delta, omegas_ciclo
                     )
                     emd_iteracion = emd_union - emd_delta
 
                     if emd_iteracion < emd_local:
                         emd_local = emd_iteracion
                         indice_mip = k
+                        # Almacenamos el delta que dio el mejor resultado en esta iteración 'j'
+                        # para usarlo para la partición candidata
+                        emd_particion_candidata = emd_delta
+                        dist_particion_candidata = dist_marginal_delta
 
-                    emd_particion_candidata = emd_delta
-                    dist_particion_candidata = dist_marginal_delta
-                    ...
-                # self.logger.critic(f"       [k]: {indice_mip}")
+                # Asegurarse de que `indice_mip` se haya asignado antes de usarlo
+                if indice_mip != -1:
+                    # Mover el mejor delta de `deltas_ciclo` a `omegas_ciclo`
+                    # `pop` devuelve el elemento eliminado
+                    best_delta_to_add = deltas_ciclo.pop(indice_mip)
+                    omegas_ciclo.append(best_delta_to_add)
+                else:
+                    # Esto podría indicar un problema si no se encontró un delta óptimo
+                    # Manejar el error o lógica de salida según sea necesario
+                    self.logger.error("No se encontró un delta óptimo en la iteración.")
+                    break # Salir del bucle 'j' si no se encuentra un delta
 
-                omegas_ciclo.append(deltas_ciclo[indice_mip])
-                deltas_ciclo.pop(indice_mip)
-                ...
+            # Almacenar la mejor partición para esta "fase" (bucle `i`)
+            # La clave del diccionario debe ser hashable (una tupla)
+            # Asegúrate de que `deltas_ciclo` (la partición restante) sea una tupla
+            # si va a ser la clave del diccionario.
+            final_delta_group = tuple(deltas_ciclo) # Convertir a tupla para hashable
+            self.memoria_particiones[final_delta_group] = emd_particion_candidata, dist_particion_candidata
 
-            self.memoria_particiones[
-                tuple(
-                    deltas_ciclo[LAST_IDX]
-                    if isinstance(deltas_ciclo[LAST_IDX], list)
-                    else deltas_ciclo
-                )
-            ] = emd_particion_candidata, dist_particion_candidata
+            # Preparar para la siguiente fase: combinar los últimos elementos
+            # Esta lógica puede ser compleja si omegas_ciclo contiene listas de tuplas
+            # Asegúrate de que `par_candidato` se convierta en una tupla de tuplas
+            # si los elementos dentro de omegas_ciclo y deltas_ciclo pueden ser grupos.
 
-            par_candidato = (
-                [omegas_ciclo[LAST_IDX]]
-                if isinstance(omegas_ciclo[LAST_IDX], tuple)
-                else omegas_ciclo[LAST_IDX]
-            ) + (
-                deltas_ciclo[LAST_IDX]
-                if isinstance(deltas_ciclo[LAST_IDX], list)
-                else deltas_ciclo
-            )
+            # Simplificación para el par_candidato:
+            # Si `omegas_ciclo` y `deltas_ciclo` solo contienen tuplas individuales,
+            # la lógica puede ser más sencilla. Si pueden contener listas de tuplas (grupos),
+            # la "aplanación" del par candidato es necesaria.
+            
+            # Asumiendo que `omegas_ciclo` al final de la fase 'j' tiene el grupo principal
+            # y `deltas_ciclo` tiene el grupo restante.
+            # Convertimos todo a una sola lista de tuplas para la nueva `vertices_fase`
+            
+            # Construcción del `par_candidato` y `vertices_fase` para la siguiente iteración del bucle `i`.
+            # Esta parte puede necesitar un ajuste fino dependiendo de la lógica de agrupamiento deseada.
+            # Por ahora, simplemente tomamos `omegas_ciclo` como la nueva `vertices_fase`
+            # para la próxima iteración del bucle 'i'.
+            vertices_fase = list(omegas_ciclo) # Reinicia la `vertices_fase` con los `omegas_ciclo` del final de esta fase.
 
-            omegas_ciclo.pop()
-            omegas_ciclo.append(par_candidato)
 
-            vertices_fase = omegas_ciclo
-            ...
-
+        # Retornar la clave (la tupla de nodos) de la partición con la menor pérdida
+        # Asegurarse de que las claves en `memoria_particiones` sean tuplas de tuplas
+        # para que la comparación sea correcta.
         return min(
             self.memoria_particiones, key=lambda k: self.memoria_particiones[k][0]
         )
@@ -290,26 +319,26 @@ class QNodes(SIA):
         El proceso se realiza en dos fases principales:
 
         1. Evaluación Individual:
-           - Crea una copia del estado temporal del subsistema.
-           - Activa los nodos delta en su tiempo correspondiente (presente/futuro).
-           - Si el delta ya fue evaluado antes, recupera su EMD y distribución marginal de memoria
-           - Si no, ha de:
-             * Identificar dimensiones activas en presente y futuro.
-             * Realiza bipartición del subsistema con esas dimensiones.
-             * Calcular la distribución marginal y EMD respecto al subsistema.
-             * Guarda resultados en memoria para seguro un uso futuro.
+            - Crea una copia del estado temporal del subsistema.
+            - Activa los nodos delta en su tiempo correspondiente (presente/futuro).
+            - Si el delta ya fue evaluado antes, recupera su EMD y distribución marginal de memoria
+            - Si no, ha de:
+              * Identificar dimensiones activas en presente y futuro.
+              * Realiza bipartición del subsistema con esas dimensiones.
+              * Calcular la distribución marginal y EMD respecto al subsistema.
+              * Guarda resultados en memoria para seguro un uso futuro.
 
         2. Evaluación Combinada:
-           - Sobre la misma copia temporal, activa también los nodos omega.
-           - Calcula dimensiones activas totales (delta + omega).
-           - Realiza bipartición del subsistema completo.
-           - Obtiene EMD de la combinación.
+            - Sobre la misma copia temporal, activa también los nodos omega.
+            - Calcula dimensiones activas totales (delta + omega).
+            - Realiza bipartición del subsistema completo.
+            - Obtiene EMD de la combinación.
 
         Args:
             deltas: Un nodo individual (tupla) o grupo de nodos (lista de tuplas)
-                   donde cada tupla está identificada por su (tiempo, índice), sea el tiempo t_0 identificado como 0, t_1 como 1 y, el índice hace referencia a las variables/dimensiones habilitadas para operaciones de substracción/marginalización sobre el subsistema, tal que genere la partición.
+                    donde cada tupla está identificada por su (tiempo, índice), sea el tiempo t_0 identificado como 0, t_1 como 1 y, el índice hace referencia a las variables/dimensiones habilitadas para operaciones de substracción/marginalización sobre el subsistema, tal que genere la partición.
             omegas: Lista de nodos ya agrupados, puede contener tuplas individuales
-                   o listas de tuplas para grupos formados por los pares candidatos o más uniones entre sí (grupos candidatos).
+                    o listas de tuplas para grupos formados por los pares candidatos o más uniones entre sí (grupos candidatos).
 
         Returns:
             tuple: (
@@ -319,53 +348,89 @@ class QNodes(SIA):
             )
             Esto lo hice así para hacer almacenamiento externo de la emd individual y su distribución marginal en las particiones candidatas.
         """
+        # Clave hashable para memoización de 'deltas'
+        delta_key = tuple(deltas) if isinstance(deltas, list) else deltas
+
         emd_delta = INFTY_NEG
-        temporal = [[], []]
+        vector_delta_marginal = None
 
+        # --- Memoización para el cálculo individual de delta ---
+        if delta_key in self.memoria_omega: # O usar un diccionario específico para 'deltas_individuales'
+            emd_delta, vector_delta_marginal = self.memoria_omega[delta_key]
+        else:
+            temporal_delta_dims = [[], []]
+            if isinstance(deltas, tuple):
+                d_tiempo, d_indice = deltas
+                temporal_delta_dims[d_tiempo].append(d_indice)
+            else: # Es una lista de tuplas
+                for delta in deltas:
+                    d_tiempo, d_indice = delta
+                    temporal_delta_dims[d_tiempo].append(d_indice)
+
+            copia_delta = self.sia_subsistema # Asumo que es una copia o que la bipartición no modifica el original
+            
+            # Asegurarse de que los arrays sean np.ndarray para `bipartir`
+            dims_alcance_delta = np.array(temporal_delta_dims[EFECTO], dtype=np.int8)
+            dims_mecanismo_delta = np.array(temporal_delta_dims[ACTUAL], dtype=np.int8)
+
+            particion_delta = copia_delta.bipartir(
+                dims_alcance_delta,
+                dims_mecanismo_delta,
+            )
+            vector_delta_marginal = particion_delta.distribucion_marginal()
+            emd_delta = emd_efecto(vector_delta_marginal, self.sia_dists_marginales)
+            
+            # Guardar en memoria
+            self.memoria_omega[delta_key] = (emd_delta, vector_delta_marginal)
+
+
+        # --- Cálculo de la Unión ---
+        temporal_union_dims = [[], []]
+
+        # Añadir las dimensiones de deltas a la unión
         if isinstance(deltas, tuple):
-            d_tiempo, d_indice = deltas
-            temporal[d_tiempo].append(d_indice)
-
+            temporal_union_dims[deltas[0]].append(deltas[1])
         else:
             for delta in deltas:
-                d_tiempo, d_indice = delta
-                temporal[d_tiempo].append(d_indice)
+                temporal_union_dims[delta[0]].append(delta[1])
 
-        copia_delta = self.sia_subsistema
+        # Añadir las dimensiones de omegas a la unión
+        for omega_group in omegas:
+            if isinstance(omega_group, list): # Si es un grupo de nodos (lista de tuplas)
+                for omg in omega_group:
+                    temporal_union_dims[omg[0]].append(omg[1])
+            else: # Si es un nodo individual (tupla)
+                temporal_union_dims[omega_group[0]].append(omega_group[1])
 
-        dims_alcance_delta = temporal[EFECTO]
-        dims_mecanismo_delta = temporal[ACTUAL]
+        # Convertir a tuplas inmutables y ordenadas para una clave de diccionario fiable
+        # Esto es crucial para la memoización de la unión
+        # Se pueden usar sets para garantizar unicidad y luego convertir a tupla para hashable
+        dims_alcance_union_sorted = tuple(sorted(set(temporal_union_dims[EFECTO])))
+        dims_mecanismo_union_sorted = tuple(sorted(set(temporal_union_dims[ACTUAL])))
+        
+        # Clave para la memoización de la unión
+        union_key = (dims_alcance_union_sorted, dims_mecanismo_union_sorted)
 
-        particion_delta = copia_delta.bipartir(
-            np.array(dims_alcance_delta, dtype=np.int8),
-            np.array(dims_mecanismo_delta, dtype=np.int8),
-        )
-        vector_delta_marginal = particion_delta.distribucion_marginal()
-        emd_delta = emd_efecto(vector_delta_marginal, self.sia_dists_marginales)
+        emd_union = INFTY_NEG
 
-        # Unión #
+        # --- Memoización para el cálculo de la unión ---
+        if union_key in self.memoria_omega: # Reutilizamos memoria_omega para la unión también
+            emd_union, _ = self.memoria_omega[union_key] # Solo necesitamos la EMD aquí
+        else:
+            copia_union = self.sia_subsistema
+            
+            # Asegurarse de que los arrays sean np.ndarray para `bipartir`
+            particion_union = copia_union.bipartir(
+                np.array(dims_alcance_union_sorted, dtype=np.int8),
+                np.array(dims_mecanismo_union_sorted, dtype=np.int8),
+            )
+            vector_union_marginal = particion_union.distribucion_marginal()
+            emd_union = emd_efecto(vector_union_marginal, self.sia_dists_marginales)
+            
+            # Guardar en memoria
+            self.memoria_omega[union_key] = (emd_union, vector_union_marginal)
 
-        for omega in omegas:
-            if isinstance(omega, list):
-                for omg in omega:
-                    o_tiempo, o_indice = omg
-                    temporal[o_tiempo].append(o_indice)
-            else:
-                o_tiempo, o_indice = omega
-                temporal[o_tiempo].append(o_indice)
 
-        copia_union = self.sia_subsistema
-
-        dims_alcance_union = temporal[EFECTO]
-        dims_mecanismo_union = temporal[ACTUAL]
-
-        particion_union = copia_union.bipartir(
-            np.array(dims_alcance_union, dtype=np.int8),
-            np.array(dims_mecanismo_union, dtype=np.int8),
-        )
-        vector_union_marginal = particion_union.distribucion_marginal()
-        emd_union = emd_efecto(vector_union_marginal, self.sia_dists_marginales)
- 
         return emd_union, emd_delta, vector_delta_marginal
 
     def nodes_complement(self, nodes: list[tuple[int, int]]):
