@@ -6,7 +6,7 @@ import numpy as np
 import time
 
 from src.controllers.manager import Manager
-
+from concurrent.futures import ProcessPoolExecutor
 from src.models.base.sia import SIA
 from src.models.core.system import System
 from src.models.core.solution import Solution
@@ -40,6 +40,16 @@ from src.constants.models import (
     ERROR_PARTITION,
 )
 
+def analizar_una_particion(args):
+        alcance, mecanismo, subsistema, distribucion, distancia_metrica = args
+        sub_alcance = np.array([i for i, bit in enumerate(alcance) if bit])
+        sub_mecanismo = np.array([i for i, bit in enumerate(mecanismo) if bit])
+        particion = subsistema.bipartir(sub_alcance, sub_mecanismo)
+        dist_parte_marginal = particion.distribucion_marginal()
+        emd_value = distancia_metrica(dist_parte_marginal, distribucion)
+        etiqueta_mec = "".join(map(str, mecanismo.astype(int)))
+        etiqueta_alc = "".join(map(str, alcance.astype(int)))
+        return etiqueta_mec, etiqueta_alc, emd_value
 
 class BruteForce(SIA):
     """
@@ -280,7 +290,9 @@ Estado incial: {initial_state}.
         m, n = subsistema.indices_ncubos.size, subsistema.dims_ncubos.size
 
         llave_presente = [f"{number:0{n}b}" for number in range(1 << n)]
-        llave_futuro = [f"{number:0{m}b}" for number in range(1 << m - 1)]
+        llave_futuro = [f"{number:0{m}b}" for number in range(1 << (m - 1))]
+        
+        # polars
 
         resultados = pd.DataFrame(
             columns=llave_futuro,
@@ -288,24 +300,18 @@ Estado incial: {initial_state}.
             dtype=np.float32,
         )
 
-        i, j = 1, 0
-        for alcance, mecanismo in generar_particiones(m, n):
-            sub_alcance = np.array([i for i, bit in enumerate(alcance) if bit])
-            sub_mecanismo = np.array([i for i, bit in enumerate(mecanismo) if bit])
+        args = [
+            (alcance, mecanismo, subsistema, distribucion, self.distancia_metrica)
+            for alcance, mecanismo in generar_particiones(m, n)
+        ]
 
-            particion = subsistema.bipartir(
-                np.array(sub_alcance, dtype=np.int8),
-                np.array(sub_mecanismo, dtype=np.int8),
-            )
+        # Ejecutar en paralelo usando hilos
+        with ProcessPoolExecutor() as executor:
+            resultados_paralelos = executor.map(analizar_una_particion, args)
 
-            dist_parte_marginal = particion.distribucion_marginal()
-            emd_value = self.distancia_metrica(dist_parte_marginal, distribucion)
-
-            etiqueta_mecanismo = "".join(map(str, mecanismo.astype(int)))
-            etiqueta_alcance = "".join(map(str, alcance.astype(int)))
-
-            # Asignar el valor al DataFrame
-            resultados.loc[etiqueta_mecanismo, etiqueta_alcance] = emd_value
+        # Guardar en el DataFrame los resultados
+        for etiqueta_mec, etiqueta_alc, emd_val in resultados_paralelos:
+            resultados.loc[etiqueta_mec, etiqueta_alc] = emd_val
 
         return resultados
 

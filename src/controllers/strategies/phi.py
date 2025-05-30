@@ -99,12 +99,12 @@ class Phi(SIA):
         completo = NodeLabels(etiquetas, indices)
         mpt_estados_nodos_on = self.sia_cargar_tpm()
         red = Network(tpm=mpt_estados_nodos_on, node_labels=completo)
-        self.sia_logger.critic("Original creado.")
+        # self.sia_logger.critic("Original creado.")
 
         candidato = tuple(
             completo[i] for i, bit in enumerate(condiciones) if bit == STR_ONE
         )
-        self.sia_logger.critic("Candidato creado.")
+        # self.sia_logger.critic("Candidato creado.")
 
         subsistema = Subsystem(network=red, state=estado_inicial, nodes=candidato)
         self.sia_logger.critic("Subsistema creado.")
