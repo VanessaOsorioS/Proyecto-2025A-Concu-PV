@@ -91,8 +91,8 @@ class QNodes(SIA):
                 all_results = []
                 for chunk in chunks:
                     args = [
-                        (self, delta, omegas_ciclo, deepcopy(self.sia_dists_marginales))
-                        for delta in chunk
+                        (self, delta, omegas_ciclo, self.sia_dists_marginales)
+                         for delta in chunk
                     ]
                     chunk_results = pool.map(_process_submodular, args)
                     all_results.extend(chunk_results)
