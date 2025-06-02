@@ -3,7 +3,7 @@ from numpy.typing import NDArray
 import numpy as np
 
 
-@dataclass(frozen=True)
+@dataclass
 class NCube:
     """
     N-cubo hace referencia a un cubo n-dimensional, donde estarán indexados según la posición de precedencia de los datos, permitiendo el rápido acceso y operación en memoria.
@@ -17,6 +17,7 @@ class NCube:
     data: np.ndarray
 
     def __post_init__(self):
+        
         """Validación de tamaño y dimensionalidad tras inicialización.
 
         Raises:
@@ -24,8 +25,11 @@ class NCube:
         """
         if self.dims.size and self.data.shape != (2,) * self.dims.size:
             raise ValueError(
-                f"Forma inválida {self.data.shape} para dimensiones {self.dims}"
+                f"Forma inválida {self.data.shape} para dimensiones {self.dims}"            
             )
+        self._marginal_cache = {}
+
+    
 
     def condicionar(
         self,
@@ -88,6 +92,7 @@ class NCube:
         )
 
     def marginalizar(self, ejes: NDArray[np.int8]) -> "NCube":
+        clave = tuple(sorted(ejes.tolist()))
         """
         Marginalizar a nivel del n-cubo permite acoplar o colapsar una o más dimensiones manteniendo la probabilidad condicional.
         El n-cubo puede esquematizarse de forma tal que se aprecie el solapamiento y promedio ente caras, donde la dimensión más baja es el primer desplazamiento dimensional sobre el arreglo.
@@ -124,9 +129,14 @@ class NCube:
             Se han agrupado los valores del n-cubo por promedio, dejando los remanentes en la dimension 0.
         """
 
+    #if not self._marginal_cache:
+        #self._marginal_cache = {}
+        if clave in self._marginal_cache:
+            return self._marginal_cache[clave]
         marginable_axis = np.intersect1d(ejes, self.dims)
         if not marginable_axis.size:
             return self
+    
         numero_dims = self.dims.size - 1
         ejes_locales = tuple(
             numero_dims - dim_idx
@@ -137,11 +147,13 @@ class NCube:
             [d for d in self.dims if d not in marginable_axis],
             dtype=np.int8,
         )
-        return NCube(
+        resultado = NCube(
             data=np.mean(self.data, axis=ejes_locales, keepdims=False),
             dims=new_dims,
             indice=self.indice,
         )
+        self._marginal_cache[clave] = resultado
+        return resultado
 
     def __str__(self) -> str:
         dims_str = f"dims={self.dims}"

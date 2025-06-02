@@ -79,12 +79,12 @@ class QNodes(SIA):
         vertices_totales = sorted(vertices)
         start_time = time.time()
 
-        chunk_size = 2
         omegas_ciclo = [vertices_totales[0]]
         deltas_restantes = sorted(vertices_totales[1:])
 
         with mp.Pool(processes=self.num_workers) as pool:
             while len(deltas_restantes) > 0:
+                chunk_size = max(1, len(deltas_restantes) // self.num_workers)
                 chunks = [deltas_restantes[i:i + chunk_size] for i in range(0, len(deltas_restantes), chunk_size)]
 
                 all_results = []
