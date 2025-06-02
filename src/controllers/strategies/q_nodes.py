@@ -29,10 +29,9 @@ from src.constants.base import (
 )
 
 def _process_submodular(args):
-    """Worker function for parallel processing"""
-    qnodes, delta, omegas, sia_dists_marginales = args
-    emd_union, emd_delta, vector_delta_marginal = qnodes.funcion_submodular(delta, omegas, sia_dists_marginales)
-    return delta, emd_union, emd_delta, vector_delta_marginal
+    delta, omegas, subsistema, dist_marg = args
+    return funcion_submodular(delta, omegas, subsistema, dist_marg)
+
 
 class QNodes(SIA):
     """
@@ -91,9 +90,10 @@ class QNodes(SIA):
                 all_results = []
                 for chunk in chunks:
                     args = [
-                        (self, delta, omegas_ciclo, self.sia_dists_marginales)
-                         for delta in chunk
-                    ]
+                        (delta, omegas_ciclo, self.sia_subsistema, self.sia_dists_marginales)
+                        for delta in chunk
+                        ]
+
                     chunk_results = pool.map(_process_submodular, args)
                     all_results.extend(chunk_results)
 
@@ -142,49 +142,48 @@ class QNodes(SIA):
             particion=fmt,
         )
 
-    def funcion_submodular(
-        self,
-        deltas: Union[tuple, List[tuple]],
-        omegas: List[Union[tuple, List[tuple]]],
-        sia_dists_marginales: np.ndarray
-    ) -> Tuple[float, float, np.ndarray]:
-        emd_delta = INFTY_NEG
-        temporal = [[], []]
-
-        if isinstance(deltas, tuple):
-            d_tiempo, d_indice = deltas
-            temporal[d_tiempo].append(d_indice)
-        else:
-            for delta in sorted(deltas):
-                d_tiempo, d_indice = delta
-                temporal[d_tiempo].append(d_indice)
-
-        copia_delta = self.sia_subsistema
-        particion_delta = copia_delta.bipartir(
-            np.array(sorted(temporal[EFECTO]), dtype=np.int8),
-            np.array(sorted(temporal[ACTUAL]), dtype=np.int8),
-        )
-        vector_delta_marginal = particion_delta.distribucion_marginal()
-        emd_delta = emd_efecto(vector_delta_marginal, sia_dists_marginales)
-
-        for omega in sorted(omegas, key=str):
-            if isinstance(omega, list):
-                for omg in sorted(omega):
-                    o_tiempo, o_indice = omg
-                    temporal[o_tiempo].append(o_indice)
-            else:
-                o_tiempo, o_indice = omega
-                temporal[o_tiempo].append(o_indice)
-
-        copia_union = self.sia_subsistema
-        particion_union = copia_union.bipartir(
-            np.array(sorted(temporal[EFECTO]), dtype=np.int8),
-            np.array(sorted(temporal[ACTUAL]), dtype=np.int8),
-        )
-        vector_union_marginal = particion_union.distribucion_marginal()
-        emd_union = emd_efecto(vector_union_marginal, sia_dists_marginales)
-
-        return emd_union, emd_delta, vector_delta_marginal
-
     def nodes_complement(self, nodes: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
         return sorted(list(set(self.vertices) - set(nodes)))
+
+def funcion_submodular(
+    deltas: Union[tuple, List[tuple]],
+    omegas: List[Union[tuple, List[tuple]]],
+    subsistema,  # tipo: System
+    sia_dists_marginales: np.ndarray
+) -> Tuple[float, float, np.ndarray]:
+    temporal = [[], []]
+
+    if isinstance(deltas, tuple):
+        d_tiempo, d_indice = deltas
+        temporal[d_tiempo].append(d_indice)
+    else:
+        for delta in sorted(deltas):
+            d_tiempo, d_indice = delta
+            temporal[d_tiempo].append(d_indice)
+
+    particion_delta = subsistema.bipartir(
+        np.array(sorted(temporal[EFECTO]), dtype=np.int8),
+        np.array(sorted(temporal[ACTUAL]), dtype=np.int8),
+    )
+    vector_delta_marginal = particion_delta.distribucion_marginal()
+    emd_delta = emd_efecto(vector_delta_marginal, sia_dists_marginales)
+
+    for omega in sorted(omegas, key=str):
+        if isinstance(omega, list):
+            for omg in sorted(omega):
+                o_tiempo, o_indice = omg
+                temporal[o_tiempo].append(o_indice)
+        else:
+            o_tiempo, o_indice = omega
+            temporal[o_tiempo].append(o_indice)
+
+    particion_union = subsistema.bipartir(
+        np.array(sorted(temporal[EFECTO]), dtype=np.int8),
+        np.array(sorted(temporal[ACTUAL]), dtype=np.int8),
+    )
+    vector_union_marginal = particion_union.distribucion_marginal()
+    emd_union = emd_efecto(vector_union_marginal, sia_dists_marginales)
+
+    return deltas, emd_union, emd_delta, vector_delta_marginal
+
+
