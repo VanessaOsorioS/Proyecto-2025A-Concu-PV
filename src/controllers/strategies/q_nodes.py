@@ -28,11 +28,14 @@ from src.constants.base import (
     ACTUAL,
 )
 
-def _process_submodular(args):
-    """Worker function for parallel processing"""
-    qnodes, delta, omegas, sia_dists_marginales = args
-    emd_union, emd_delta, vector_delta_marginal = qnodes.funcion_submodular(delta, omegas, sia_dists_marginales)
-    return delta, emd_union, emd_delta, vector_delta_marginal
+def _process_batch(args):
+    """Worker function for parallel batch processing"""
+    qnodes, deltas_batch, omegas, sia_dists_marginales = args
+    results = []
+    for delta in deltas_batch:
+        emd_union, emd_delta, vector_delta_marginal = qnodes.funcion_submodular(delta, omegas, sia_dists_marginales)
+        results.append((delta, emd_union, emd_delta, vector_delta_marginal))
+    return results
 
 class QNodes(SIA):
     """
@@ -47,8 +50,9 @@ class QNodes(SIA):
         self.memoria_particiones = {}
         self.etiquetas = [tuple(s.lower() for s in ABECEDARY), ABECEDARY]
         self.logger = SafeLogger(QNODES_STRAREGY_TAG)
-
-        self.num_workers = 4  # Fixed for deterministic behavior
+        
+        # Optimize worker count based on CPU cores, but cap at 8 for deterministic behavior
+        self.num_workers = min(8, mp.cpu_count())
         self.logger.info(f"Initialized with {self.num_workers} workers")
 
     @profile(context={TYPE_TAG: QNODES_ANALYSIS_TAG})
@@ -74,54 +78,54 @@ class QNodes(SIA):
         vertices = presente + futuro
         self.vertices = set(vertices)
 
-        manager = mp.Manager()
-        shared_particiones = manager.dict()
-
         vertices_totales = sorted(vertices)
         start_time = time.time()
 
-        chunk_size = 2
+        # Dynamic batch size based on total workload and number of workers
+        total_vertices = len(vertices_totales)
+        batch_size = max(2, total_vertices // (self.num_workers * 2))
+        
         omegas_ciclo = [vertices_totales[0]]
         deltas_restantes = sorted(vertices_totales[1:])
+        resultados = {}
 
         with mp.Pool(processes=self.num_workers) as pool:
-            while len(deltas_restantes) > 0:
-                chunks = [deltas_restantes[i:i + chunk_size] for i in range(0, len(deltas_restantes), chunk_size)]
+            while deltas_restantes:
+                # Create batches for parallel processing
+                batches = [
+                    deltas_restantes[i:i + batch_size]
+                    for i in range(0, len(deltas_restantes), batch_size)
+                ]
 
+                # Process batches in parallel
+                args = [
+                    (self, batch, omegas_ciclo, self.sia_dists_marginales)
+                    for batch in batches
+                ]
+                
                 all_results = []
-                for chunk in chunks:
-                    args = [
-                        (self, delta, omegas_ciclo, deepcopy(self.sia_dists_marginales))
-                        for delta in chunk
-                    ]
-                    chunk_results = pool.map(_process_submodular, args)
-                    all_results.extend(chunk_results)
+                for batch_results in pool.map(_process_batch, args):
+                    all_results.extend(batch_results)
 
-                # Deterministic selection: sort by cost then delta
+                # Deterministic selection
                 all_results.sort(key=lambda x: (round(x[1] - x[2], 10), str(x[0])))
+                
+                if not all_results:
+                    break
 
-                min_cost = float('inf')
-                best_delta = None
-                best_emd_delta = None
-                best_dist = None
+                # Select best result deterministically
+                best_delta, best_emd_union, best_emd_delta, best_dist = all_results[0]
+                
+                # Store result and update working sets
+                resultados[best_delta] = (best_emd_delta, best_dist)
+                omegas_ciclo.append(best_delta)
+                deltas_restantes.remove(best_delta)
 
-                for delta, emd_union, emd_delta, dist in all_results:
-                    cost = emd_union - emd_delta
-                    if cost < min_cost or (cost == min_cost and str(delta) < str(best_delta)):
-                        min_cost = cost
-                        best_delta = delta
-                        best_emd_delta = emd_delta
-                        best_dist = dist
-
-                if best_delta is not None:
-                    shared_particiones[tuple(best_delta)] = (best_emd_delta, best_dist)
-                    omegas_ciclo.append(best_delta)
-                    deltas_restantes = [d for d in deltas_restantes if d != best_delta]
-
-        if shared_particiones:
-            raw_key = min(shared_particiones.keys(), key=lambda k: (shared_particiones[k][0], str(k)))
-            key = (raw_key,) if isinstance(raw_key[0], int) else raw_key
-            perdida, dist_marginal = shared_particiones[raw_key]
+        # Final solution selection
+        if resultados:
+            best_key = min(resultados.keys(), key=lambda k: (resultados[k][0], str(k)))
+            perdida, dist_marginal = resultados[best_key]
+            key = (best_key,) if isinstance(best_key[0], int) else best_key
             fmt = fmt_biparte_q(list(key), self.nodes_complement(list(key)))
         else:
             self.logger.warning("No partitions found, using default values")
@@ -159,7 +163,8 @@ class QNodes(SIA):
                 d_tiempo, d_indice = delta
                 temporal[d_tiempo].append(d_indice)
 
-        copia_delta = self.sia_subsistema
+        # Create deep copies to prevent shared state issues
+        copia_delta = deepcopy(self.sia_subsistema)
         particion_delta = copia_delta.bipartir(
             np.array(sorted(temporal[EFECTO]), dtype=np.int8),
             np.array(sorted(temporal[ACTUAL]), dtype=np.int8),
@@ -176,7 +181,7 @@ class QNodes(SIA):
                 o_tiempo, o_indice = omega
                 temporal[o_tiempo].append(o_indice)
 
-        copia_union = self.sia_subsistema
+        copia_union = deepcopy(self.sia_subsistema)
         particion_union = copia_union.bipartir(
             np.array(sorted(temporal[EFECTO]), dtype=np.int8),
             np.array(sorted(temporal[ACTUAL]), dtype=np.int8),
